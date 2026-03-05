@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>城市夜行者：在线小游戏</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg1: #04070f;
+      --bg2: #0a1430;
+      --accent: #6ee7ff;
+      --accent-2: #67ffb1;
+      --danger: #ff6b6b;
+      --text: #ecf2ff;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(circle at 20% 20%, #162b5a 0%, transparent 35%),
+        radial-gradient(circle at 80% 10%, #1f3f7a 0%, transparent 28%),
+        linear-gradient(160deg, var(--bg2), var(--bg1));
+      color: var(--text);
+    }
+
+    .game-shell {
+      width: min(1000px, 94vw);
+      display: grid;
+      gap: 14px;
+    }
+
+    .hud {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      padding: 10px 14px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 12px;
+      backdrop-filter: blur(8px);
+      background: rgba(6, 12, 28, 0.55);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+    }
+
+    .hud strong {
+      color: var(--accent);
+      font-weight: 600;
+      margin-left: 6px;
+    }
+
+    .hint {
+      opacity: 0.9;
+      font-size: 0.94rem;
+    }
+
+    .board-wrap {
+      position: relative;
+      border-radius: 16px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      box-shadow:
+        0 20px 40px rgba(0, 0, 0, 0.45),
+        inset 0 0 40px rgba(0, 0, 0, 0.4);
+      background: #030712;
+    }
+
+    canvas {
+      width: 100%;
+      display: block;
+      aspect-ratio: 16 / 9;
+      background: linear-gradient(#02050c 0%, #071a3f 26%, #0d2a57 45%, #0f1830 100%);
+    }
+
+    .overlay {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      pointer-events: none;
+      text-align: center;
+      background: linear-gradient(180deg, rgba(2,6,23,0.25), rgba(2,6,23,0.75));
+      opacity: 0;
+      transition: opacity .25s ease;
+      padding: 20px;
+    }
+
+    .overlay.show { opacity: 1; }
+
+    .card {
+      max-width: 580px;
+      padding: 20px 24px;
+      border-radius: 16px;
+      background: rgba(5, 10, 24, 0.75);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+      pointer-events: auto;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(1.3rem, 3.5vw, 1.9rem);
+      letter-spacing: 0.5px;
+    }
+
+    p { margin: 6px 0; line-height: 1.5; }
+
+    button {
+      margin-top: 12px;
+      border: none;
+      border-radius: 999px;
+      padding: 10px 16px;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      color: #041124;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 6px 16px rgba(103, 255, 177, 0.25);
+    }
+
+    button:hover { transform: translateY(-1px); }
+  </style>
+</head>
+<body>
+  <main class="game-shell">
+    <section class="hud">
+      <div>速度：<strong id="speed">0</strong> km/h</div>
+      <div>距离：<strong id="distance">0</strong> m</div>
+      <div>近失误：<strong id="nearMiss">0</strong></div>
+      <div>记录：<strong id="best">0</strong> m</div>
+      <div class="hint">控制：← / → 或 A / D（手机可左右点按屏幕）</div>
+    </section>
+
+    <section class="board-wrap">
+      <canvas id="game" width="1280" height="720" aria-label="城市夜行者游戏画布"></canvas>
+      <div id="overlay" class="overlay show">
+        <div class="card">
+          <h1>城市夜行者</h1>
+          <p>你驾驶着悬浮摩托穿越夜色都市，避开车流并制造“擦身而过”获得加速。</p>
+          <p>越快越刺激，但碰撞就结束。看看你能冲多远！</p>
+          <button id="startBtn">开始游戏</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const overlay = document.getElementById('overlay');
+    const startBtn = document.getElementById('startBtn');
+    const speedEl = document.getElementById('speed');
+    const distanceEl = document.getElementById('distance');
+    const nearMissEl = document.getElementById('nearMiss');
+    const bestEl = document.getElementById('best');
+
+    const lanes = [0.2, 0.4, 0.6, 0.8].map(v => canvas.width * v);
+    const state = {
+      playing: false,
+      bikeLane: 1,
+      bikeX: lanes[1],
+      targetX: lanes[1],
+      speed: 125,
+      distance: 0,
+      nearMiss: 0,
+      time: 0,
+      obstacles: [],
+      stars: Array.from({ length: 80 }, () => ({
+        x: Math.random() * canvas.width,
+        y: Math.random() * (canvas.height * 0.45),
+        a: Math.random() * 0.8 + 0.2,
+        r: Math.random() * 1.5 + 0.5
+      })),
+      sparks: [],
+      best: Number(localStorage.getItem('night-rider-best') || 0)
+    };
+
+    bestEl.textContent = state.best.toFixed(0);
+
+    const keyState = { left: false, right: false };
+
+    function resetGame() {
+      state.bikeLane = 1;
+      state.bikeX = lanes[1];
+      state.targetX = lanes[1];
+      state.speed = 125;
+      state.distance = 0;
+      state.nearMiss = 0;
+      state.time = 0;
+      state.obstacles = [];
+      state.sparks = [];
+      for (let i = 0; i < 7; i += 1) spawnObstacle(true, i * 100 + 120);
+      updateHud();
+    }
+
+    function updateHud() {
+      speedEl.textContent = state.speed.toFixed(0);
+      distanceEl.textContent = state.distance.toFixed(0);
+      nearMissEl.textContent = state.nearMiss;
+      bestEl.textContent = state.best.toFixed(0);
+    }
+
+    function spawnObstacle(initial = false, customY = -60) {
+      const laneIndex = Math.floor(Math.random() * lanes.length);
+      const vehicleType = Math.random() > 0.5 ? 'car' : 'truck';
+      const width = vehicleType === 'truck' ? 110 : 74;
+      const height = vehicleType === 'truck' ? 170 : 128;
+      const colorSet = vehicleType === 'truck'
+        ? ['#9ca3af', '#4b5563', '#d1d5db']
+        : ['#f43f5e', '#22d3ee', '#f59e0b', '#8b5cf6'];
+      state.obstacles.push({
+        laneIndex,
+        x: lanes[laneIndex],
+        y: initial ? customY : -height - Math.random() * 240,
+        width,
+        height,
+        speedFactor: Math.random() * 0.22 + 0.84,
+        color: colorSet[Math.floor(Math.random() * colorSet.length)],
+        nearPassed: false
+      });
+    }
+
+    function spawnSparks(x, y) {
+      for (let i = 0; i < 14; i += 1) {
+        state.sparks.push({
+          x,
+          y,
+          vx: (Math.random() - 0.5) * 220,
+          vy: -Math.random() * 80 - 30,
+          life: 0.5 + Math.random() * 0.35,
+          age: 0,
+          size: Math.random() * 3 + 1
+        });
+      }
+    }
+
+    function controlFromKeys() {
+      if (keyState.left && !keyState.right) state.bikeLane = Math.max(0, state.bikeLane - 1);
+      if (keyState.right && !keyState.left) state.bikeLane = Math.min(lanes.length - 1, state.bikeLane + 1);
+      state.targetX = lanes[state.bikeLane];
+      keyState.left = false;
+      keyState.right = false;
+    }
+
+    function update(dt) {
+      if (!state.playing) return;
+
+      state.time += dt;
+      controlFromKeys();
+
+      const laneChangeSmoothing = 12;
+      state.bikeX += (state.targetX - state.bikeX) * Math.min(1, laneChangeSmoothing * dt);
+
+      const acceleration = 2.4 + state.nearMiss * 0.06;
+      state.speed = Math.min(320, state.speed + acceleration * dt);
+      state.distance += (state.speed / 3.6) * dt;
+
+      const trafficSpeed = (state.speed / 3.6) * 3.3;
+      for (const o of state.obstacles) {
+        o.y += trafficSpeed * o.speedFactor * dt;
+      }
+
+      if (state.obstacles.length < 9) spawnObstacle();
+      state.obstacles = state.obstacles.filter(o => o.y < canvas.height + o.height + 40);
+
+      const bike = { x: state.bikeX, y: canvas.height - 130, w: 76, h: 126 };
+
+      for (const o of state.obstacles) {
+        const dx = Math.abs(bike.x - o.x);
+        const dy = Math.abs((bike.y - 6) - o.y);
+        const collide = dx < (bike.w + o.width) * 0.38 && dy < (bike.h + o.height) * 0.42;
+        if (collide) {
+          endGame();
+          return;
+        }
+
+        const near = dx < (bike.w + o.width) * 0.58 && dy < (bike.h + o.height) * 0.56;
+        if (near && !o.nearPassed && o.y > bike.y - 15) {
+          o.nearPassed = true;
+          state.nearMiss += 1;
+          state.speed = Math.min(335, state.speed + 9);
+          spawnSparks(bike.x, bike.y + 8);
+        }
+      }
+
+      state.sparks = state.sparks.filter(p => {
+        p.age += dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.vy += 240 * dt;
+        return p.age < p.life;
+      });
+
+      updateHud();
+    }
+
+    function drawRoad(time) {
+      const h = canvas.height;
+      const w = canvas.width;
+      const top = h * 0.2;
+      const bottom = h;
+      const roadTopWidth = w * 0.25;
+      const roadBottomWidth = w * 0.85;
+      const centerX = w / 2;
+
+      ctx.fillStyle = '#07152e';
+      ctx.fillRect(0, 0, w, h);
+
+      for (const s of state.stars) {
+        ctx.fillStyle = `rgba(255,255,255,${s.a})`;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      const roadGradient = ctx.createLinearGradient(0, top, 0, bottom);
+      roadGradient.addColorStop(0, '#1f2937');
+      roadGradient.addColorStop(1, '#020617');
+      ctx.fillStyle = roadGradient;
+      ctx.beginPath();
+      ctx.moveTo(centerX - roadTopWidth / 2, top);
+      ctx.lineTo(centerX + roadTopWidth / 2, top);
+      ctx.lineTo(centerX + roadBottomWidth / 2, bottom);
+      ctx.lineTo(centerX - roadBottomWidth / 2, bottom);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+      ctx.lineWidth = 4;
+      for (let i = 1; i < 4; i += 1) {
+        const ratio = i / 4;
+        const xTop = centerX - roadTopWidth / 2 + ratio * roadTopWidth;
+        const xBottom = centerX - roadBottomWidth / 2 + ratio * roadBottomWidth;
+        ctx.beginPath();
+        ctx.moveTo(xTop, top);
+        ctx.lineTo(xBottom, bottom);
+        ctx.stroke();
+      }
+
+      const stripeOffset = (time * state.speed * 0.75) % 90;
+      ctx.strokeStyle = 'rgba(153, 246, 255, 0.65)';
+      ctx.lineWidth = 5;
+      for (let y = top + stripeOffset; y < bottom; y += 90) {
+        const t = (y - top) / (bottom - top);
+        const roadWidthAtY = roadTopWidth + (roadBottomWidth - roadTopWidth) * t;
+        const left = centerX - roadWidthAtY / 2;
+        const right = centerX + roadWidthAtY / 2;
+        ctx.beginPath();
+        ctx.moveTo(left + roadWidthAtY / 2 - 4, y - 20);
+        ctx.lineTo(right - roadWidthAtY / 2 + 4, y + 20);
+        ctx.stroke();
+      }
+    }
+
+    function drawVehicle(x, y, w, h, color, enemy = false) {
+      const grad = ctx.createLinearGradient(x - w / 2, y - h / 2, x + w / 2, y + h / 2);
+      grad.addColorStop(0, enemy ? '#0f172a' : '#093351');
+      grad.addColorStop(1, color);
+      ctx.fillStyle = grad;
+      ctx.shadowColor = enemy ? 'rgba(255, 120, 120, 0.4)' : 'rgba(110, 231, 255, 0.5)';
+      ctx.shadowBlur = 22;
+      ctx.beginPath();
+      ctx.roundRect(x - w / 2, y - h / 2, w, h, 16);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      ctx.fillStyle = 'rgba(220, 245, 255, 0.9)';
+      ctx.fillRect(x - w * 0.22, y - h * 0.3, w * 0.44, h * 0.2);
+
+      ctx.fillStyle = enemy ? 'rgba(255, 92, 92, 0.92)' : 'rgba(103, 255, 177, 0.95)';
+      ctx.fillRect(x - w * 0.33, y + h * 0.28, w * 0.2, h * 0.08);
+      ctx.fillRect(x + w * 0.13, y + h * 0.28, w * 0.2, h * 0.08);
+    }
+
+    function drawBike() {
+      const x = state.bikeX;
+      const y = canvas.height - 130;
+
+      ctx.fillStyle = 'rgba(102, 252, 241, 0.18)';
+      ctx.beginPath();
+      ctx.ellipse(x, y + 54, 48, 22, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      drawVehicle(x, y, 76, 126, '#0ea5e9', false);
+
+      const flame = 26 + Math.sin(state.time * 24) * 5 + (state.speed / 320) * 18;
+      const grad = ctx.createLinearGradient(x, y + 62, x, y + 62 + flame);
+      grad.addColorStop(0, 'rgba(186, 247, 255, 0.95)');
+      grad.addColorStop(1, 'rgba(56, 189, 248, 0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(x - 12, y + 58);
+      ctx.lineTo(x + 12, y + 58);
+      ctx.lineTo(x, y + 62 + flame);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function drawSparks() {
+      for (const p of state.sparks) {
+        const alpha = 1 - p.age / p.life;
+        ctx.fillStyle = `rgba(125, 249, 255, ${alpha})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    function render() {
+      drawRoad(state.time);
+      for (const o of state.obstacles) drawVehicle(o.x, o.y, o.width, o.height, o.color, true);
+      drawBike();
+      drawSparks();
+    }
+
+    function endGame() {
+      state.playing = false;
+      state.best = Math.max(state.best, state.distance);
+      localStorage.setItem('night-rider-best', String(state.best.toFixed(0)));
+      bestEl.textContent = state.best.toFixed(0);
+      overlay.querySelector('h1').textContent = '碰撞！任务结束';
+      overlay.querySelector('p').textContent = `本次距离 ${state.distance.toFixed(0)}m，近失误 ${state.nearMiss} 次。再来一局？`;
+      startBtn.textContent = '重新开始';
+      overlay.classList.add('show');
+    }
+
+    let last = 0;
+    function loop(ts) {
+      const dt = Math.min(0.035, (ts - last) / 1000 || 0.016);
+      last = ts;
+      update(dt);
+      render();
+      requestAnimationFrame(loop);
+    }
+
+    function moveLane(dir) {
+      if (!state.playing) return;
+      state.bikeLane = Math.max(0, Math.min(lanes.length - 1, state.bikeLane + dir));
+      state.targetX = lanes[state.bikeLane];
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'a') keyState.left = true;
+      if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'd') keyState.right = true;
+    });
+
+    canvas.addEventListener('pointerdown', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      if (x < rect.width / 2) moveLane(-1);
+      else moveLane(1);
+    });
+
+    startBtn.addEventListener('click', () => {
+      resetGame();
+      state.playing = true;
+      overlay.classList.remove('show');
+      overlay.querySelector('h1').textContent = '城市夜行者';
+      overlay.querySelector('p').textContent = '你驾驶着悬浮摩托穿越夜色都市，避开车流并制造“擦身而过”获得加速。';
+      startBtn.textContent = '开始游戏';
+    });
+
+    resetGame();
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
